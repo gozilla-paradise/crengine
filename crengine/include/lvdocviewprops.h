@@ -85,6 +85,9 @@
 #define PROP_FORMAT_UNUSED_SPACE_THRESHOLD_PERCENT   "crengine.style.unused.space.threshold.percent"
 // Max allowed added letter spacing (% of font size)
 #define PROP_FORMAT_MAX_ADDED_LETTER_SPACING_PERCENT "crengine.style.max.added.letter.spacing.percent"
+// Thai justification: 0=only expand spaces, 1=distribute space between Thai
+// characters (inter-character justification, like MS Word "Thai Justify")
+#define PROP_FORMAT_THAI_JUSTIFY                     "crengine.style.thai.justify"
 // CJK char width expansion (% of nominal width)
 #define PROP_FORMAT_CJK_WIDTH_SCALE_PERCENT          "crengine.style.cjk.width.scale.percent"
 

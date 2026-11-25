@@ -120,6 +120,7 @@ extern const int gDOMVersionCurrent;
 #define DEF_MIN_SPACE_CONDENSING_PERCENT 50
 #define DEF_UNUSED_SPACE_THRESHOLD_PERCENT 5
 #define DEF_MAX_ADDED_LETTER_SPACING_PERCENT 0
+#define DEF_THAI_JUSTIFY 0
 #define DEF_CJK_WIDTH_SCALE_PERCENT 100
 
 #define NODE_DISPLAY_STYLE_HASH_UNINITIALIZED 0xFFFFFFFF
@@ -569,6 +570,7 @@ protected:
     int  _minSpaceCondensingPercent;
     int  _unusedSpaceThresholdPercent;
     int  _maxAddedLetterSpacingPercent;
+    int  _thaiJustify;
     int  _cjkWidthScalePercent;
 
     lUInt32 _nodeStyleHash;
@@ -670,6 +672,18 @@ public:
         _maxAddedLetterSpacingPercent = maxAddedLetterSpacingPercent;
         // This does not need to trigger a re-rendering, just
         // a re-formatting of the final blocks
+        _renderedBlockCache.clear();
+        return true;
+    }
+
+    bool setThaiJustify(int thaiJustify) {
+        if (thaiJustify == _thaiJustify)
+            return false;
+        _thaiJustify = thaiJustify;
+        // As with max added letter spacing, this only changes how words are
+        // positioned on already laid out lines (line breaks and paragraph
+        // heights don't change): no re-rendering needed, just a re-formatting
+        // of the final blocks.
         _renderedBlockCache.clear();
         return true;
     }

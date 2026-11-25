@@ -2436,6 +2436,7 @@ tinyNodeCollection::tinyNodeCollection()
 , _minSpaceCondensingPercent(DEF_MIN_SPACE_CONDENSING_PERCENT)
 , _unusedSpaceThresholdPercent(DEF_UNUSED_SPACE_THRESHOLD_PERCENT)
 , _maxAddedLetterSpacingPercent(DEF_MAX_ADDED_LETTER_SPACING_PERCENT)
+, _thaiJustify(DEF_THAI_JUSTIFY)
 , _cjkWidthScalePercent(DEF_CJK_WIDTH_SCALE_PERCENT)
 , _nodeStyleHash(0)
 , _nodeDisplayStyleHash(NODE_DISPLAY_STYLE_HASH_UNINITIALIZED)
@@ -2482,6 +2483,7 @@ tinyNodeCollection::tinyNodeCollection( tinyNodeCollection & v )
 , _minSpaceCondensingPercent(DEF_MIN_SPACE_CONDENSING_PERCENT)
 , _unusedSpaceThresholdPercent(DEF_UNUSED_SPACE_THRESHOLD_PERCENT)
 , _maxAddedLetterSpacingPercent(DEF_MAX_ADDED_LETTER_SPACING_PERCENT)
+, _thaiJustify(DEF_THAI_JUSTIFY)
 , _cjkWidthScalePercent(DEF_CJK_WIDTH_SCALE_PERCENT)
 , _nodeStyleHash(0)
 , _nodeDisplayStyleHash(NODE_DISPLAY_STYLE_HASH_UNINITIALIZED)
@@ -3942,6 +3944,7 @@ LFormattedText * lxmlDocBase::createFormattedText()
     p->setMinSpaceCondensingPercent(_minSpaceCondensingPercent);
     p->setUnusedSpaceThresholdPercent(_unusedSpaceThresholdPercent);
     p->setMaxAddedLetterSpacingPercent(_maxAddedLetterSpacingPercent);
+    p->setThaiJustify(_thaiJustify);
     p->setCJKWidthScalePercent(_cjkWidthScalePercent);
     p->setHighlightOptions(&_highlightOptions);
     return p;
@@ -19107,7 +19110,7 @@ lUInt32 tinyNodeCollection::calcStyleHash(bool already_rendered, lUInt32 force_n
     res = res * 31 + _unusedSpaceThresholdPercent;
     res = res * 31 + _cjkWidthScalePercent;
 
-    // _maxAddedLetterSpacingPercent does not need to be accounted, as, working
+    // _maxAddedLetterSpacingPercent (and _thaiJustify) does not need to be accounted, as, working
     // only on a laid out line, it does not need a re-rendering, but just
     // a _renderedBlockCache.clear() to reformat paragraphs and have the
     // word re-positioned (the paragraphs width & height do not change)

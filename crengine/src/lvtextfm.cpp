@@ -183,6 +183,7 @@ formatted_text_fragment_t * lvtextAllocFormatter( lUInt16 width )
     pbuffer->min_space_condensing_percent = MIN_SPACE_CONDENSING_PERCENT; // 50%
     pbuffer->unused_space_threshold_percent = UNUSED_SPACE_THRESHOLD_PERCENT; // 5%
     pbuffer->max_added_letter_spacing_percent = MAX_ADDED_LETTER_SPACING_PERCENT; // 0%
+    pbuffer->thai_justify = 0;
     pbuffer->cjk_width_scale_percent = CJK_WIDTH_SCALE_PERCENT; // 100% (keep original width)
 
     return pbuffer;
@@ -2767,6 +2768,115 @@ public:
 #define MAX_WORD_SIZE 64
 
     /// align line: add or reduce widths of spaces to achieve desired text alignment
+    // Thai justification, like MS Word "Thai Justify": Thai is written without
+    // spaces between words, and spaces are mostly used between phrases, so a
+    // justified line of Thai text usually has only a few spaces, which would
+    // get all the extra width and become huge gaps. Instead, distribute the
+    // extra width evenly between all Thai glyphs (clusters) and the spaces,
+    // using letter spacing on words flagged LTEXT_WORD_IS_THAI by addLine().
+    // Letter spacing being a number of pixels per word, any rest is rounded off
+    // by giving 1px more to some words' glyphs, and then 1px more at some
+    // spaces and Thai word boundaries.
+    // Returns false if nothing was done (no Thai glyph on this line).
+    bool distributeThaiJustifySpace( formatted_line_t * frmline, int extra_width ) {
+        int nb_words = (int)frmline->word_count;
+        int nb_glyph_gaps = 0; // gaps after Thai glyphs that can get letter spacing
+        int nb_space_gaps = 0; // spaces that can be expanded
+        for ( int i=0; i<nb_words; i++ ) {
+            formatted_word_t * word = &frmline->words[i];
+            // We use these temporary slots (not used anymore at this point) to store,
+            // per word, the nb of glyph gaps that get letter spacing, and the max
+            // letter spacing allowed.
+            word->_top_to_baseline = 0;
+            word->_baseline_to_bottom = 0;
+            if ( (word->flags & LTEXT_WORD_IS_THAI) && word->distinct_glyphs > 0 ) {
+                int gaps = word->distinct_glyphs;
+                if ( i == nb_words-1 && !(word->flags & LTEXT_WORD_CAN_HYPH_BREAK_LINE_AFTER) )
+                    gaps--; // no letter spacing after the last glyph of the line
+                if ( gaps > 0 ) {
+                    word->_top_to_baseline = gaps;
+                    nb_glyph_gaps += gaps;
+                    // Don't let glyphs get further apart than 1/3 em: on lines with
+                    // few glyphs (ie. before a long unbreakable word), the spaces
+                    // and word boundaries will get the remaining extra width.
+                    LVFont * font = (LVFont *)m_pbuffer->srctext[word->src_text_index].t.font;
+                    word->_baseline_to_bottom = font ? font->getSize() / 3 : 0;
+                }
+            }
+            if ( i < nb_words-1 && (word->flags & LTEXT_WORD_CAN_ADD_SPACE_AFTER) )
+                nb_space_gaps++;
+        }
+        if ( nb_glyph_gaps <= 0 )
+            return false;
+        // Each glyph gap and each space gets the same share
+        int share = extra_width / (nb_glyph_gaps + nb_space_gaps);
+        int remaining = extra_width;
+        for ( int i=0; i<nb_words; i++ ) {
+            formatted_word_t * word = &frmline->words[i];
+            if ( word->_top_to_baseline <= 0 )
+                continue;
+            int ls = share < word->_baseline_to_bottom ? share : word->_baseline_to_bottom;
+            word->added_letter_spacing = ls;
+            remaining -= word->_top_to_baseline * ls;
+        }
+        // Round off: give whole words 1px more letter spacing, as long as it fits
+        // in what's left after the spaces get their share.
+        int spare = remaining - nb_space_gaps * share;
+        for ( int i=0; i<nb_words && spare > 0; i++ ) {
+            formatted_word_t * word = &frmline->words[i];
+            int gaps = word->_top_to_baseline;
+            if ( gaps > 0 && gaps <= spare && word->added_letter_spacing < word->_baseline_to_bottom ) {
+                word->added_letter_spacing++;
+                spare -= gaps;
+                remaining -= gaps;
+            }
+        }
+        // What's left goes, as evenly as possible, to spaces and Thai word boundaries
+        int nb_points = 0;
+        for ( int i=0; i<nb_words-1; i++ ) {
+            if ( isThaiJustifyPoint(frmline, i) )
+                nb_points++;
+        }
+        int addSpaceDiv = 0;
+        int addSpaceMod = 0;
+        if ( nb_points > 0 ) {
+            addSpaceDiv = remaining / nb_points;
+            addSpaceMod = remaining % nb_points;
+        }
+        // Apply: update widths of letter spaced words and shift all words
+        int delta = 0;
+        for ( int i=0; i<nb_words; i++ ) {
+            formatted_word_t * word = &frmline->words[i];
+            word->x += delta;
+            if ( word->_top_to_baseline > 0 && word->added_letter_spacing > 0 ) {
+                int added_width = word->_top_to_baseline * word->added_letter_spacing;
+                word->width += added_width;
+                word->min_width += added_width;
+                delta += added_width;
+            }
+            if ( nb_points > 0 && i < nb_words-1 && isThaiJustifyPoint(frmline, i) ) {
+                delta += addSpaceDiv;
+                if ( addSpaceMod > 0 ) {
+                    addSpaceMod--;
+                    delta++;
+                }
+            }
+        }
+        frmline->width += delta;
+        return true;
+    }
+
+    // Whether some extra width can be added after this word with Thai justification:
+    // at an expandable space, or between 2 Thai words (dictionary word boundary)
+    bool isThaiJustifyPoint( formatted_line_t * frmline, int i ) {
+        formatted_word_t * word = &frmline->words[i];
+        if ( word->flags & LTEXT_WORD_CAN_ADD_SPACE_AFTER )
+            return true;
+        if ( (word->flags & LTEXT_WORD_IS_THAI) && (frmline->words[i+1].flags & LTEXT_WORD_IS_THAI) )
+            return true;
+        return false;
+    }
+
     void alignLine( formatted_line_t * frmline, int alignment, int rightIndent=0, bool hasInlineBoxes=false ) {
         // Fetch current line x offset and max width
         int x_offset;
@@ -2984,9 +3094,22 @@ public:
             extra_width = usable_width - frmline->width;
         }
 
+        // With Thai justification, lines with Thai words get their extra width
+        // distributed between glyphs by distributeThaiJustifySpace() below.
+        bool thai_justify_line = false;
+        if ( m_pbuffer->thai_justify && alignment == LTEXT_ALIGN_WIDTH ) {
+            for ( int i=0; i<(int)frmline->word_count; i++ ) {
+                if ( frmline->words[i].flags & LTEXT_WORD_IS_THAI ) {
+                    thai_justify_line = true;
+                    break;
+                }
+            }
+        }
+
         // We might want to prevent this when LangCfg == "de" (in german,
         // letter spacing is used for emphasis)
         if ( m_pbuffer->max_added_letter_spacing_percent > 0 // only if allowed
+                        && !thai_justify_line                // Thai justification does its own letter spacing
                         && alignment == LTEXT_ALIGN_WIDTH    // only when justifying
                         && frmline->word_count > 1           // not if single word (expanded, but not taking the full width is ugly)
                         && 100 * extra_width > m_pbuffer->unused_space_threshold_percent * usable_width ) {
@@ -3232,7 +3355,10 @@ public:
                 m_cjk_prev_line_added_space_div = 0;
                 m_cjk_prev_line_added_space_mod = 0;
             }
-            if ( extra_width > 0 ) {
+            if ( extra_width > 0 && thai_justify_line && distributeThaiJustifySpace(frmline, extra_width) ) {
+                // done
+            }
+            else if ( extra_width > 0 ) {
                 // distribute additional space
                 int extraSpace = extra_width;
                 int addSpacePoints = 0;
@@ -3778,6 +3904,14 @@ public:
         // Used when LTEXT_FIT_GLYPHS and preceeding or following word is an image or inline box
         int prev_word_overflow = 0;
         bool prev_word_is_object = false;
+        // With Thai justification, on justified lines, we make a word of each Thai
+        // dictionary word (split where ThaiWordBreak allowed a line break), and flag
+        // these words as LTEXT_WORD_IS_THAI, so alignLine() can distribute the extra
+        // space between their glyphs (and round off at these word boundaries).
+        // This needs HarfBuzz, which adds letter spacing only after whole clusters
+        // (so Thai marks above and below stay with their base char).
+        bool thai_justify = m_pbuffer->thai_justify && align == LTEXT_ALIGN_WIDTH
+                                && m_kerning_mode == KERNING_MODE_HARFBUZZ;
         for ( int i=start; i<=end; i++ ) { // loop thru each char
             src_text_fragment_t * newSrc = i<end ? m_srcs[i] : NULL;
             if ( i<end ) {
@@ -3886,6 +4020,8 @@ public:
                               || isToIgnore
                               || (m_flags[wstart] & LCHAR_IS_CJK) // a CJK char makes its own word
                               || (m_flags[i] & LCHAR_IS_CJK) // a CJK char ends previous word
+                              || ( thai_justify && (m_flags[i-1] & LCHAR_ALLOW_WRAP_AFTER) // a Thai word boundary
+                                    && ThaiWordBreak::isThaiChar(m_text[i-1]) && ThaiWordBreak::isThaiChar(m_text[i]) )
                              ) ) {
                 // New HTML source node, space met just before, last word, or CJK char:
                 // create and add new word with chars from wstart to i-1
@@ -4293,6 +4429,14 @@ public:
 
                     if ( i - wstart == 1 && (m_flags[wstart] & LCHAR_IS_CJK) ) {
                         word->flags |= LTEXT_WORD_IS_CJK;
+                    }
+                    if ( thai_justify && word->distinct_glyphs > 0 ) {
+                        for ( int j=wstart; j < i; j++ ) {
+                            if ( ThaiWordBreak::isThaiChar(m_text[j]) ) {
+                                word->flags |= LTEXT_WORD_IS_THAI;
+                                break;
+                            }
+                        }
                     }
 
                     // If we're asked to fit glyphs (avoid glyphs from overflowing line edges and
@@ -6096,6 +6240,11 @@ void LFormattedText::setMaxAddedLetterSpacingPercent(int maxAddedLetterSpacingPe
 {
     if (maxAddedLetterSpacingPercent>=0 && maxAddedLetterSpacingPercent<=20)
         m_pbuffer->max_added_letter_spacing_percent = maxAddedLetterSpacingPercent;
+}
+
+void LFormattedText::setThaiJustify(int thaiJustify)
+{
+    m_pbuffer->thai_justify = thaiJustify ? 1 : 0;
 }
 
 void LFormattedText::setCJKWidthScalePercent(int cjkWidthScalePercent)
