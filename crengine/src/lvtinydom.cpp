@@ -3975,6 +3975,13 @@ ldomDocument::ldomDocument()
 , _partial_rerendering_fake_node_style_hash(0)
 , _rendered_fragments(16)
 , _doc_pages(NULL)
+, _initial_partial_rendering_wanted(false)
+, _initial_partial_rendering_min_text(0)
+, _skeleton_rendering(false)
+, _skeleton_state(false)
+, _skeleton_target_fragment(0)
+, _skeleton_calib_fragment(0)
+, _skeleton_ratio_percent(0)
 #endif
 , lists(100)
 , _parsingDocFragmentIdx(-1)
@@ -4027,6 +4034,13 @@ ldomDocument::ldomDocument( ldomDocument & doc )
 , _partial_rerendering_fake_node_style_hash(0)
 , _rendered_fragments(16)
 , _doc_pages(NULL)
+, _initial_partial_rendering_wanted(false)
+, _initial_partial_rendering_min_text(0)
+, _skeleton_rendering(false)
+, _skeleton_state(false)
+, _skeleton_target_fragment(0)
+, _skeleton_calib_fragment(0)
+, _skeleton_ratio_percent(0)
 #endif
 , _container(doc._container)
 , lists(100)
@@ -5423,6 +5437,7 @@ bool ldomDocument::enablePartialRerendering( bool enable ) {
         _partial_rerenderings_count = 0;
         _rerendering_delayed = false;
         _rendered_fragments.clear();
+        _skeleton_state = false;
         _nodeStyleHash = 0; // have it recomputed
         if ( did_some_partial_rerenderings ) {
             // Some partial rerenderings did happen: the rendering info
@@ -5579,6 +5594,192 @@ bool ldomDocument::partialRender( ldomNode * node ) {
     // a cache save, and will soon reload the document from that new cache.
 }
 
+// Support for initial partial rendering
+
+// Count the chars of text (UTF-8 lead bytes) and the final blocks inside node
+static void countSkeletonText( ldomNode * node, lUInt32 & nb_chars, lUInt32 & nb_final )
+{
+    if ( node->isText() ) {
+        lString8 txt = node->getText8();
+        const lUInt8 * p = (const lUInt8 *)txt.c_str();
+        int len = txt.length();
+        for ( int i=0; i<len; i++ ) {
+            if ( (p[i] & 0xC0) != 0x80 )
+                nb_chars++;
+        }
+        return;
+    }
+    int m = node->getRendMethod();
+    if ( m == erm_invisible )
+        return;
+    if ( m == erm_final )
+        nb_final++;
+    int cnt = node->getChildCount();
+    for ( int i=0; i<cnt; i++ )
+        countSkeletonText( node->getChildNode(i), nb_chars, nb_final );
+}
+
+// Check if an initial partial rendering can and should be done, and prepare it
+bool ldomDocument::initSkeletonRendering()
+{
+    _skeleton_target_fragment = 0;
+    _skeleton_calib_fragment = 0;
+    _skeleton_ratio_percent = 0;
+    _skeleton_fragments_text.clear();
+    if ( !hasCacheFile() ) {
+        // A cache file is needed (for a full rendering in the background, and to reload
+        // from it): it would be created after this rendering, but we need it now.
+        createCacheFile();
+    }
+    if ( !canBePartiallyRerendered() )
+        return false;
+    if ( !BLOCK_RENDERING(getRenderBlockRenderingFlags(), ENHANCED) ) // (DocFragments are only skipped there)
+        return false;
+    ldomNode * body = getRootNode()->getChildNode(0);
+    int nb_fragments = body->getChildCount();
+    // Count the text in each DocFragment, to estimate their heights
+    lUInt32 total = 0;
+    _skeleton_fragments_text.reserve(nb_fragments*2);
+    for ( int i=0; i<nb_fragments; i++ ) {
+        lUInt32 nb_chars = 0;
+        lUInt32 nb_final = 0;
+        ldomNode * node = body->getChildNode(i);
+        if ( node->isElement() )
+            countSkeletonText( node, nb_chars, nb_final );
+        _skeleton_fragments_text.add(nb_chars);
+        _skeleton_fragments_text.add(nb_final);
+        total += nb_chars;
+    }
+    if ( (int)total < _initial_partial_rendering_min_text ) {
+        CRLog::info("Initial partial rendering not done: not enough text (%d < %d)", total, _initial_partial_rendering_min_text);
+        _skeleton_fragments_text.clear();
+        return false;
+    }
+    // Find the DocFragment to render
+    ldomNode * target = NULL;
+    if ( !_initial_partial_rendering_xpointer.empty() ) {
+        ldomXPointer xp = createXPointer(_initial_partial_rendering_xpointer);
+        ldomNode * node = xp.getNode();
+        while ( node && node->getParentNode() != body )
+            node = node->getParentNode();
+        target = node;
+    }
+    if ( !target ) // start of the book
+        target = body->getChildNode(0);
+    if ( target && target->isElement() && target->getNodeId() == el_DocFragment )
+        _skeleton_target_fragment = target->getDataIndex();
+    // Also render the first DocFragment with a usual amount of text (not a cover, a title page
+    // or a ToC), to calibrate the estimated heights of the DocFragments after it
+    for ( int i=0; i<nb_fragments; i++ ) {
+        lUInt32 nb_chars = _skeleton_fragments_text[i*2];
+        ldomNode * node = body->getChildNode(i);
+        if ( nb_chars >= 2000 && nb_chars <= 50000 && node->isElement() && node->getNodeId() == el_DocFragment ) {
+            _skeleton_calib_fragment = node->getDataIndex();
+            break;
+        }
+    }
+    CRLog::info("Initial partial rendering: %d DocFragments, %d chars, rendering DocFragment %d", nb_fragments, total, target ? target->getNodeIndex() : -1);
+    return true;
+}
+
+bool ldomDocument::ensureRenderedForPosition( ldomNode * node )
+{
+    if ( !_skeleton_state || !_partial_rerendering_enabled || !node )
+        return false;
+    ldomNode * body = getRootNode()->getChildNode(0);
+    while ( node && node->getParentNode() != body )
+        node = node->getParentNode();
+    if ( !node || !node->isElement() || node->getNodeId() != el_DocFragment )
+        return false;
+    return partialRender(node); // does nothing if already rendered
+}
+
+bool ldomDocument::ensureRenderedForRange( int y0, int y1 )
+{
+    if ( !_skeleton_state || !_partial_rerendering_enabled )
+        return false;
+    ldomNode * body = getRootNode()->getChildNode(0);
+    int nb = body->getChildCount();
+    bool rendered = false;
+    // (Limit the number of renderings, in case of very small DocFragments)
+    for ( int iter=0; iter < 50; iter++ ) {
+        // DocFragments are ordered by y: binary search the first one ending after y0
+        int lo = 0, hi = nb;
+        while ( lo < hi ) {
+            int mid = lo + (hi-lo)/2;
+            lvRect rc;
+            body->getChildNode(mid)->getAbsRect(rc);
+            if ( rc.bottom <= y0 ) lo = mid+1; else hi = mid;
+        }
+        bool done_one = false;
+        for ( int i=lo; i<nb; i++ ) {
+            ldomNode * node = body->getChildNode(i);
+            lvRect rc;
+            node->getAbsRect(rc);
+            if ( rc.top >= y1 )
+                break;
+            if ( node->isElement() && node->getNodeId() == el_DocFragment && partialRender(node) ) {
+                rendered = true;
+                done_one = true;
+                break; // positions have changed: check again
+            }
+        }
+        if ( !done_one )
+            break;
+    }
+    return rendered;
+}
+
+// Estimated height of a DocFragment that is not rendered by the initial partial rendering.
+// Also gives the height of the lines of the space to be added, which can be split between pages.
+int ldomDocument::getSkeletonEstimatedHeight( ldomNode * node, int width, int & line_h, bool calibrated )
+{
+    int font_size = _def_font->getSize();
+    line_h = _def_font->getHeight() * getInterlineScaleFactor() / INTERLINE_SCALE_FACTOR_NO_SCALE;
+    if ( line_h <= 0 )
+        line_h = 1;
+    int idx = node->getNodeIndex();
+    if ( idx < 0 || idx*2+1 >= _skeleton_fragments_text.length() )
+        return line_h;
+    lUInt32 nb_chars = _skeleton_fragments_text[idx*2];
+    lUInt32 nb_final = _skeleton_fragments_text[idx*2+1];
+    // Assume chars are about half a font size wide, and each paragraph
+    // adds a partially filled line and some margin.
+    int char_w = font_size / 2;
+    if ( char_w <= 0 )
+        char_w = 1;
+    int chars_per_line = width / char_w;
+    if ( chars_per_line < 1 )
+        chars_per_line = 1;
+    lInt64 nb_lines = nb_chars / chars_per_line + nb_final;
+    lInt64 h = nb_lines * line_h;
+    if ( calibrated && _skeleton_calib_fragment ) {
+        // Calibrate with the real height of the calibration DocFragment, once rendered
+        // (DocFragments before it, usually a few small ones, are not calibrated)
+        if ( _skeleton_ratio_percent == 0 ) {
+            ldomNode * calib = getTinyNode(_skeleton_calib_fragment);
+            if ( calib && calib->getNodeIndex() < idx ) {
+                int calib_line_h;
+                int est_h = getSkeletonEstimatedHeight(calib, width, calib_line_h, false);
+                RenderRectAccessor fmt( calib );
+                int real_h = fmt.getHeight();
+                int ratio = est_h > 0 && real_h > 0 ? (int)((lInt64)real_h * 100 / est_h) : 100;
+                if ( ratio < 20 ) ratio = 20;
+                if ( ratio > 500 ) ratio = 500;
+                _skeleton_ratio_percent = ratio;
+                CRLog::info("Initial partial rendering: calibration %d%% (DocFragment %d: estimated %d, real %d)", ratio, calib->getNodeIndex(), est_h, real_h);
+            }
+        }
+        if ( _skeleton_ratio_percent > 0 )
+            h = h * _skeleton_ratio_percent / 100;
+    }
+    if ( h < line_h )
+        h = line_h;
+    if ( h > 0x3FFFFFFF / 4 )
+        h = 0x3FFFFFFF / 4;
+    return (int)h;
+}
+
 bool ldomDocument::render( LVRendPageList * pages, LVDocViewCallback * callback, int width, int dy,
                            bool showCover, int y0, font_ref_t def_font, int def_interline_space,
                            CRPropRef props, int usable_left_overflow, int usable_right_overflow )
@@ -5716,6 +5917,13 @@ bool ldomDocument::render( LVRendPageList * pages, LVDocViewCallback * callback,
         _rendered = false;
     }
     if ( !_rendered ) {
+        // Initial partial rendering, if requested (once) and possible
+        bool skeleton = false;
+        if ( _initial_partial_rendering_wanted ) {
+            _initial_partial_rendering_wanted = false;
+            if ( !_partial_rerendering_enabled )
+                skeleton = initSkeletonRendering();
+        }
         if ( callback ) {
             callback->OnFormatStart();
         }
@@ -5735,7 +5943,9 @@ bool ldomDocument::render( LVRendPageList * pages, LVDocViewCallback * callback,
         context.setCallback(callback, numFinalBlocks);
         //updateStyles();
         CRLog::trace("rendering...");
+        _skeleton_rendering = skeleton;
         renderBlockElement( context, getRootNode(), 0, y0, width, usable_left_overflow, usable_right_overflow );
+        _skeleton_rendering = false;
         _rendered = true;
     #if 0 //def _DEBUG
         LVStreamRef ostream = LVOpenFileStream( "test_save_after_init_rend_method.xml", LVOM_WRITE );
@@ -5761,6 +5971,36 @@ bool ldomDocument::render( LVRendPageList * pages, LVDocViewCallback * callback,
             // updateRenderContext() does this, but doing it here avoids
             // a call and an expensive CalcStyleHash)
             _hdr.node_displaystyle_hash = _nodeDisplayStyleHashInitial;
+        }
+
+        if ( skeleton ) {
+            // Only the target DocFragment has been rendered: get into the same state as after
+            // enablePartialRerendering(true) and a change of rendering settings, so the other
+            // DocFragments get rendered when drawn (by partialRender()).
+            _partial_rerendering_enabled = true;
+            _partial_rerendering_usable_left_overflow = usable_left_overflow;
+            _partial_rerendering_usable_right_overflow = usable_right_overflow;
+            _partial_rerendering_fake_node_style_hash = _nodeStyleHash; // as computed by updateRenderContext()
+            _rendered_fragments.clear();
+            if ( _skeleton_target_fragment )
+                _rendered_fragments.set(_skeleton_target_fragment, _doc_rendering_hash);
+            if ( _skeleton_calib_fragment )
+                _rendered_fragments.set(_skeleton_calib_fragment, _doc_rendering_hash);
+            // Count it as a partial rendering: the rendering is not complete, so it must not be saved
+            // to the cache, and disabling partial rerendering will trigger a full rendering.
+            _partial_rerenderings_count = 1;
+            _rerendering_delayed = true; // let the frontend know
+            _doc_pages = pages; // partial renderings will update it in place
+            if ( _cacheFile ) {
+                // Flush any pending write, so nothing gets written later over what a full
+                // rendering done in the background (in a forked process) would save.
+                CRTimerUtil infinite;
+                _cacheFile->flush(false, infinite);
+            }
+            setCacheFileStale(false);
+            _skeleton_fragments_text.clear();
+            _skeleton_state = true;
+            CRLog::info("Initial partial rendering done: %d pages (estimated)", pages->length());
         }
 
         if ( callback ) {
@@ -19070,6 +19310,13 @@ ContinuousOperationResult ldomDocument::updateMap(CRTimerUtil & maxTime, LVDocVi
         return CR_DONE;
     }
 
+    if ( _partial_rerendering_enabled && _partial_rerenderings_count > 0 ) {
+        // Some DocFragments have been partially (re)rendered, the rendering data is not
+        // consistent: never save it (a full rendering may save it, ie. in the background,
+        // after disabling partial rerendering).
+        CRLog::info("Partial renderings done, cache file update not allowed");
+        return CR_DONE;
+    }
     if ( !_cacheFileStale) {
         CRLog::info("No change, cache file update not needed");
         return CR_DONE;

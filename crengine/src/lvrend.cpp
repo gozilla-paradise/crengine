@@ -9020,6 +9020,17 @@ void renderBlockElementEnhanced( FlowState * flow, ldomNode * enode, int x, int 
 
                 // recurse all sub-blocks for blocks
                 int cnt = enode->getChildCount();
+                if ( nodeElementId == el_DocFragment && flow->isMainFlow()
+                            && enode->getDocument()->isSkeletonRenderingSkipped(enode) ) {
+                    // Initial partial rendering: this DocFragment will be rendered
+                    // later (when drawn): just reserve its estimated height, as
+                    // space that can be split between pages.
+                    int line_h;
+                    int est_h = enode->getDocument()->getSkeletonEstimatedHeight(enode,
+                                        width - padding_left - padding_right, line_h);
+                    flow->addContentSpace(est_h, line_h, false, false, false);
+                    cnt = 0; // skip children
+                }
                 for (int i=0; i<cnt; i++) {
                     ldomNode * child = enode->getChildNode( i );
                     if ( child->isText() ) {

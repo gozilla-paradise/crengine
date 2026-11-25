@@ -1481,10 +1481,15 @@ bool LVRendPageInfo::deserialize( SerialBuf & buf )
 
 void LVRendPageList::replacePages(int old_y, int old_h, LVRendPageList * pages, int next_pages_shift_y)
 {
+    int old_end = old_y + old_h;
     int remove_idx = -1;
     int remove_count = 0;
     int insert_idx = -1;
     int added_count = pages->length();
+    // A page starting before old_y and ending after old_end (ie. when the replaced
+    // area is small) gets split: we keep the part before, and add the part after
+    // as a new page after the inserted ones.
+    LVRendPageInfo * tail = NULL;
     for  ( int i=0; i < length(); i++ ) {
         LVRendPageInfo * pi = ((*this)[i]);
         if ( pi->start + pi->height <= old_y ) {
@@ -1493,21 +1498,28 @@ void LVRendPageList::replacePages(int old_y, int old_h, LVRendPageList * pages, 
         }
         if ( pi->start < old_y ) {
             // part of this page before: truncate it
+            int page_end = pi->start + pi->height;
+            if ( page_end > old_end && !tail ) {
+                tail = new LVRendPageInfo(old_end + next_pages_shift_y, page_end - old_end, 0);
+                tail->flow = pi->flow;
+                added_count++;
+            }
             pi->height = old_y - pi->start;
             insert_idx = i + 1;
             // printf("%d (%d +%d) truncated\n", pi->index, pi->start, pi->height);
             continue;
         }
-        if ( pi->start >= old_y + old_h ) {
+        if ( pi->start >= old_end ) {
             // page fully after
             pi->start += next_pages_shift_y;
             pi->index += added_count - remove_count;
             // printf("%d (%d +%d) after, fixed\n", pi->index, pi->start, pi->height);
         }
-        else if ( pi->start + pi->height > old_y + old_h ) {
-            // part of this page after: truncate it
-            pi->start = old_y + old_h;
-            pi->height = pi->start + pi->height - pi->start;
+        else if ( pi->start + pi->height > old_end ) {
+            // part of this page after: truncate it, and shift it as the pages after
+            int page_end = pi->start + pi->height;
+            pi->start = old_end + next_pages_shift_y;
+            pi->height = page_end - old_end;
             pi->index += added_count - remove_count;
             // printf("%d (%d +%d) truncated\n", pi->index, pi->start, pi->height);
         }
@@ -1532,5 +1544,9 @@ void LVRendPageList::replacePages(int old_y, int old_h, LVRendPageList * pages, 
         insert( insert_idx, pi );
         // printf("%d (%d +%d) inserted\n", pi->index, pi->start, pi->height);
         insert_idx++;
+    }
+    if ( tail ) {
+        tail->index = insert_idx;
+        insert( insert_idx, tail );
     }
 }

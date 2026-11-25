@@ -2751,6 +2751,20 @@ private:
     // mapping of DocFragment node dataIndex to the _doc_rendering_hash that this docFragment is currently rendered for
     LVHashTable<lUInt32, lUInt32> _rendered_fragments;
     LVRendPageList * _doc_pages; // pointer to LVDocView's m_pages
+
+    // Support for initial partial rendering: when a full rendering is needed, only render
+    // the DocFragment to be shown, and give the others an estimated height. Partial
+    // rerenderings will then render them as they are drawn (frontends are expected to
+    // do a full rendering in the background, and to reload from the cache it saves).
+    bool _initial_partial_rendering_wanted; // set by frontend, for the next full rendering
+    int  _initial_partial_rendering_min_text; // only if the document has more text than this
+    lString32 _initial_partial_rendering_xpointer; // xpointer in the DocFragment to render
+    bool _skeleton_rendering; // while doing such an initial partial rendering
+    bool _skeleton_state; // after it, until partial rerendering is disabled (DocFragments may not be rendered at all)
+    lUInt32 _skeleton_target_fragment; // DataIndex of the DocFragment rendered (0 if none)
+    lUInt32 _skeleton_calib_fragment; // DataIndex of a DocFragment also rendered, to calibrate estimations (0 if none)
+    int  _skeleton_ratio_percent; // calibration: its real height / its estimated height
+    LVArray<lUInt32> _skeleton_fragments_text; // per DocFragment index: nb of chars, nb of final blocks
 #endif
 
     lString32 _docStylesheetFileName;
@@ -2975,6 +2989,33 @@ public:
         return rerendering_delayed;
     }
     bool partialRender( ldomNode * node );
+
+    // Support for initial partial rendering (see above): to be called after loading, before rendering.
+    // xpointer: a position in the DocFragment to render (the start of the book if empty).
+    // min_text_size: only done if the document has at least that many chars of text.
+    void setInitialPartialRendering( bool enable, int min_text_size=0, lString32 xpointer=lString32::empty_str ) {
+        _initial_partial_rendering_wanted = enable;
+        _initial_partial_rendering_min_text = min_text_size;
+        _initial_partial_rendering_xpointer = xpointer;
+    }
+    // Used by renderBlockElement(): whether this DocFragment should not be rendered, and its estimated height
+    bool isSkeletonRenderingSkipped( ldomNode * node ) {
+        return _skeleton_rendering && (lUInt32)node->getDataIndex() != _skeleton_target_fragment
+                                   && (lUInt32)node->getDataIndex() != _skeleton_calib_fragment;
+    }
+    int getSkeletonEstimatedHeight( ldomNode * node, int width, int & line_h, bool calibrated=true );
+    // After an initial partial rendering, some DocFragments have not been rendered at all, and
+    // positions inside them are those of their top: frontends should call this before getting
+    // a position or a page from a xpointer, to render its DocFragment if needed.
+    // Returns true if it was rendered (pages have changed).
+    bool ensureRenderedForPosition( ldomNode * node );
+    // Same, for the DocFragments shown in the absolute y range [y0, y1) (rendering one may shift
+    // the next ones into this range: they are rendered too). Returns true if some were rendered.
+    bool ensureRenderedForRange( int y0, int y1 );
+    bool isSkeletonState() { return _skeleton_state && _partial_rerendering_enabled; }
+protected:
+    bool initSkeletonRendering();
+public:
 #endif
     /// create xpointer from pointer string
     ldomXPointer createXPointer( const lString32 & xPointerStr );

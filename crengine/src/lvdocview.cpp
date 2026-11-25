@@ -2339,6 +2339,20 @@ int LVDocView::SetPos(int pos, bool savePos, bool allowScrollAfterEnd) {
     CHECK_RENDER("setPos()")
 	//if ( m_posIsSet && m_pos==pos )
 	//    return;
+	if (m_doc->isSkeletonState()) {
+		// After an initial partial rendering: render the DocFragments shown at pos if needed.
+		// Small moves (scrolling) are relative to the current position (which is rendered).
+		int delta = pos - _pos;
+		bool relative = delta != 0 && delta >= -2*m_dy && delta <= 2*m_dy && !_posBookmark.isNull();
+		ldomXPointer anchor = _posBookmark;
+		int anchor_offset = relative ? _pos - anchor.toPoint().y : 0;
+		for (int iter = 0; iter < 20; iter++) {
+			if (!m_doc->ensureRenderedForRange(pos, pos + m_dy))
+				break;
+			if (relative)
+				pos = anchor.toPoint().y + anchor_offset + delta;
+		}
+	}
 	if (isScrollMode()) {
 		if (pos > GetFullHeight() - m_dy && !allowScrollAfterEnd)
 			pos = GetFullHeight() - m_dy;
@@ -2388,6 +2402,33 @@ bool LVDocView::goToPage(int page, bool internal, bool updatePosBookmark, bool r
 	bool res = true;
 	if (!internal)
 		page = getInternalPageNumber(page);
+	if (m_doc->isSkeletonState()) {
+		// After an initial partial rendering: render the DocFragments shown on the target page
+		// if needed. Page turns are relative to the current position (which is rendered), as
+		// pages before it may have shifted: going back from the first page of a DocFragment
+		// shows the last page of the previous one.
+		int cur = _page;
+		int delta = page - cur;
+		int pc = getVisiblePageCount() > 1 ? 2 : 1;
+		bool relative = cur >= 0 && delta != 0 && delta >= -2*pc && delta <= 2*pc && !_posBookmark.isNull();
+		ldomXPointer anchor = _posBookmark;
+		for (int iter = 0; iter < 20; iter++) {
+			if (page >= m_pages.length())
+				page = m_pages.length() - 1;
+			if (page < 0)
+				page = 0;
+			int last = page + pc - 1 < m_pages.length() ? page + pc - 1 : m_pages.length() - 1;
+			int y0 = m_pages[page]->start;
+			int y1 = m_pages[last]->start + m_pages[last]->height;
+			if (!m_doc->ensureRenderedForRange(y0, y1))
+				break;
+			if (relative) {
+				int new_cur = getBookmarkPage(anchor, true);
+				if (new_cur >= 0)
+					page = new_cur + delta;
+			}
+		}
+	}
 	if (isScrollMode()) {
 		if (page >= 0 && page < m_pages.length()) {
 			_pos = m_pages[page]->start;
@@ -5614,6 +5655,11 @@ bool LVDocView::getBookmarkPosText(ldomXPointer bm, lString32 & titleText,
 void LVDocView::goToBookmark(ldomXPointer bm) {
 	LVLock lock(getMutex());
     CHECK_RENDER("goToBookmark()")
+	if (m_doc->isSkeletonState()) {
+		// After an initial partial rendering: render its DocFragment if needed,
+		// so the position is accurate
+		m_doc->ensureRenderedForPosition(bm.getNode());
+	}
 	_posIsSet = false;
 	_posBookmark = bm;
 }
