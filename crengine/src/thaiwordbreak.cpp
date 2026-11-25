@@ -30,6 +30,12 @@
        not in the dictionary is often a name or a foreign word, that the
        dictionary would otherwise cut into small unrelated words).
 
+    5. The boundaries between two known words that all best paths go
+       through, but that are rejected only because some unknown text is
+       nearby (not next to them, but next to the words on either side),
+       can still be reported as "fallback" breaks, to be used only when
+       a line would otherwise be left too empty.
+
     The dictionary is a trie, stored in flat arrays (the children of a
     node are contiguous, so looking for the next char reads a few
     consecutive bytes). Finding all the words starting at some position
@@ -461,6 +467,7 @@ std::vector<int> _map;           // normalized index => run index
 std::vector<Edge> _edges;
 std::vector<Node> _nodes;
 std::vector<int> _breaks;        // breaks found in a run
+std::vector<int> _fallback;      // fallback breaks found in a run
 
 inline Edge makeEdge(int from, int to, bool known, bool weak) {
     Edge e;
@@ -475,8 +482,9 @@ inline Edge makeEdge(int from, int to, bool known, bool weak) {
 
 // Segment the normalized run s[0..n), and push in 'breaks' the
 // normalized indexes k (1 <= k < n) where a break is allowed
-// between s[k-1] and s[k].
-void segmentRun(const unsigned char * s, int n, std::vector<int> & breaks) {
+// between s[k-1] and s[k] (and, if provided, in 'fallback' those
+// where a break is only allowed as a fallback).
+void segmentRun(const unsigned char * s, int n, std::vector<int> & breaks, std::vector<int> * fallback) {
     if ( n < 2 )
         return;
     Node init;
@@ -585,10 +593,14 @@ void segmentRun(const unsigned char * s, int n, std::vector<int> & breaks) {
             continue;
         if ( nd.in_unk || nd.out_unk ) // unknown text on one side
             continue;
-        if ( nd.left_bad || nd.right_bad ) // known word next to unknown text
+        if ( nd.weak_adj ) // weak word on one side (probably a syllable of a name)
             continue;
-        if ( nd.weak_adj ) // weak word on one side
+        if ( nd.left_bad || nd.right_bad ) { // known word next to unknown text
+            // Known words on both sides: allowed only as a fallback
+            if ( fallback )
+                fallback->push_back(k);
             continue;
+        }
         breaks.push_back(k);
     }
 }
@@ -634,7 +646,10 @@ int setUserDict(const char * path) {
 uint32_t getHash() {
     if ( _main_path.empty() )
         return 0;
-    uint32_t hash = 0x7A1;
+    // (Bump the version when changing how breaks are found, so documents
+    // get re-rendered with the new line breaks.)
+    const uint32_t version = 2; // 2: fallback breaks
+    uint32_t hash = 0x7A1 + version;
     for ( size_t i=0; i<_main_path.size(); i++ )
         hash = hash * 31 + (unsigned char)_main_path[i];
     for ( size_t i=0; i<_weak_path.size(); i++ )
@@ -655,7 +670,8 @@ bool hasThai(const char32_t * text, int len) {
     return false;
 }
 
-int findBreaks(const char32_t * text, int len, break_cb_t callback, void * ctx) {
+int findBreaks(const char32_t * text, int len, break_cb_t callback, void * ctx,
+               break_cb_t fallback_callback) {
     if ( _main_path.empty() || !text || len < 2 )
         return 0;
     int nb_breaks = 0;
@@ -680,13 +696,17 @@ int findBreaks(const char32_t * text, int len, break_cb_t callback, void * ctx) 
         _map.resize(run_len + 1);
         int n = normalize(text + start, run_len, _s.data(), _map.data());
         breaks.clear();
-        segmentRun(_s.data(), n, breaks);
+        _fallback.clear();
+        segmentRun(_s.data(), n, breaks, fallback_callback ? &_fallback : NULL);
         for ( size_t b=0; b<breaks.size(); b++ ) {
             // Break between normalized s[k-1] and s[k], so after the
             // original char just before the one that gave s[k].
             int pos = start + _map[breaks[b]] - 1;
             callback(pos, ctx);
             nb_breaks++;
+        }
+        for ( size_t b=0; b<_fallback.size(); b++ ) {
+            fallback_callback(start + _map[_fallback[b]] - 1, ctx);
         }
     }
     return nb_breaks;
@@ -701,6 +721,7 @@ void release() {
     std::vector<Edge>().swap(_edges);
     std::vector<Node>().swap(_nodes);
     std::vector<int>().swap(_breaks);
+    std::vector<int>().swap(_fallback);
 }
 
 }

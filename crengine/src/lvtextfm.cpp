@@ -1774,10 +1774,15 @@ public:
         // words even if they are made from multiple text nodes.
         // (If white-space: nowrap, LCHAR_DEPRECATED_WRAP_AFTER has been set
         // on these chars, and will be checked as for any other break.)
+        // Word boundaries we are less sure of (next to words not in the dictionary)
+        // get LCHAR_ALLOW_FALLBACK_WRAP_AFTER, and will be used only if a line would
+        // otherwise be left too empty.
         if ( ThaiWordBreak::isEnabled() && ThaiWordBreak::hasThai(m_text, m_length) ) {
             ThaiWordBreak::findBreaks(m_text, m_length, [](int pos, void * ctx) {
                 ((lUInt16 *)ctx)[pos] |= LCHAR_ALLOW_WRAP_AFTER;
-            }, m_flags);
+            }, m_flags, [](int pos, void * ctx) {
+                ((lUInt16 *)ctx)[pos] |= LCHAR_ALLOW_FALLBACK_WRAP_AFTER;
+            });
         }
         #endif
 
@@ -4020,7 +4025,7 @@ public:
                               || isToIgnore
                               || (m_flags[wstart] & LCHAR_IS_CJK) // a CJK char makes its own word
                               || (m_flags[i] & LCHAR_IS_CJK) // a CJK char ends previous word
-                              || ( thai_justify && (m_flags[i-1] & LCHAR_ALLOW_WRAP_AFTER) // a Thai word boundary
+                              || ( thai_justify && (m_flags[i-1] & (LCHAR_ALLOW_WRAP_AFTER|LCHAR_ALLOW_FALLBACK_WRAP_AFTER)) // a Thai word boundary
                                     && ThaiWordBreak::isThaiChar(m_text[i-1]) && ThaiWordBreak::isThaiChar(m_text[i]) )
                              ) ) {
                 // New HTML source node, space met just before, last word, or CJK char:
@@ -5188,6 +5193,7 @@ public:
             int lastNormalWrap = -1;
             int lastDeprecatedWrap = -1; // Different usage whether USE_LIBUNIBREAK or not (see below)
             int lastHyphWrap = -1;
+            int lastFallbackWrap = -1; // Thai word boundary to use if a line would be left too empty
             int lastMandatoryWrap = -1;
             int spaceReduceWidth = 0; // max total line width which can be reduced by narrowing of spaces
             int cjkReduceWidth = 0; // max total line width which can be reduced by narrowing CJK punctuations
@@ -5419,6 +5425,9 @@ public:
                 }
                 #if (USE_LIBUNIBREAK==1)
                 // Note: with libunibreak, we can't assume anymore that LCHAR_ALLOW_WRAP_AFTER is synonym to IS_SPACE.
+                if ( (flags & LCHAR_ALLOW_FALLBACK_WRAP_AFTER) && !(flags & LCHAR_DEPRECATED_WRAP_AFTER) ) {
+                    lastFallbackWrap = i;
+                }
                 if (flags & LCHAR_ALLOW_WRAP_AFTER) {
                     if (flags & LCHAR_DEPRECATED_WRAP_AFTER) {
                         // Allowed by libunibreak, but prevented by "white-space: nowrap" on
@@ -5547,6 +5556,20 @@ public:
             int normalWrapWidth = lastNormalWrap > 0 ? x + m_widths[lastNormalWrap]-w0 : 0;
             int unusedSpace = maxWidth - normalWrapWidth;
             int unusedPercent = maxWidth > 0 ? unusedSpace * 100 / maxWidth : 0;
+            #if (USE_LIBUNIBREAK==1)
+                // If, with normal wrapping, more than 5% of the line would not be used,
+                // use the last fallback wrap (a Thai word boundary we are less sure of,
+                // next to some words not in the dictionary) if it fits more on the line.
+                // (Like what we do below with hyphenation, which can still be tried
+                // if the line is still not full enough.)
+                if ( lastMandatoryWrap<0 && lastFallbackWrap > lastNormalWrap && lastFallbackWrap < m_length-1
+                                && unusedPercent > m_pbuffer->unused_space_threshold_percent ) {
+                    lastNormalWrap = lastFallbackWrap;
+                    normalWrapWidth = x + m_widths[lastNormalWrap]-w0;
+                    unusedSpace = maxWidth - normalWrapWidth;
+                    unusedPercent = maxWidth > 0 ? unusedSpace * 100 / maxWidth : 0;
+                }
+            #endif
             #if (USE_LIBUNIBREAK!=1)
                 // (Different usage of deprecatedWrap than above)
                 int deprecatedWrapWidth = lastDeprecatedWrap > 0 ? x + m_widths[lastDeprecatedWrap]-w0 : 0;

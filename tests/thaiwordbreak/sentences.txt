@@ -43,3 +43,8 @@
 กรุงเทพฯ|เป็น|เมือง|ใหญ่
 # Mixed with other scripts
 อ่าน|หนังสือ|KOReader|บน|Kindle|ทุก|วัน
+# Words next to names or loanwords not in the dictionary: these boundaries
+# are only fallback breaks (used when a line would be left too empty)
+หญิง|สาว|ชื่อ|สวีหว่าน|เป็น|หนึ่ง|ใน|นักแสดง|ตัว|ประกอบ|ของ|บ้าน|ผี|สิง
+เลือด|นี่|ไม่|ใช่|พร็อพ|หรอก|นะ
+เฉินเกอ|หัน|หน้า|ไป|ดู|ก็|เห็น|ผีดิบ

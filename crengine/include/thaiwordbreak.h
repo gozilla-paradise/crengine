@@ -75,8 +75,16 @@ bool hasThai(const char32_t * text, int len);
 /// the char a break is allowed after (both text[pos] and text[pos+1]
 /// are Thai chars). Breaks at the edges of Thai runs are not reported
 /// (those are handled by the generic line breaking rules).
-/// Returns the number of breaks reported.
-int findBreaks(const char32_t * text, int len, break_cb_t callback, void * ctx);
+/// If fallback_callback is provided, it is called (same arguments) for each
+/// "fallback" break: a boundary between two dictionary words (that all the
+/// best segmentations agree on) that we don't trust enough to make it a
+/// normal break opportunity, because some text not in the dictionary is
+/// nearby. They are meant to be used only when no normal break would fill
+/// a line well enough (like hyphenation). We never report a break next to
+/// text not in the dictionary or a weak word, nor inside a cluster.
+/// Returns the number of (normal) breaks reported.
+int findBreaks(const char32_t * text, int len, break_cb_t callback, void * ctx,
+               break_cb_t fallback_callback = NULL);
 
 /// Free the main word list and work buffers (the configuration is kept:
 /// the main word list will be loaded again if needed, the user words stay).

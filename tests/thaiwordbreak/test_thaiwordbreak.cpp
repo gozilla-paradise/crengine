@@ -9,6 +9,8 @@
 // break is acceptable (word boundaries). Lines starting with '#' are comments.
 // Each sentence is printed with the breaks we found: '|' if acceptable,
 // '!' if not (a break in the middle of a word). Exit status is 1 if any '!'.
+// Fallback breaks (only used when a line would be left too empty) are shown
+// as '/' if acceptable, '?' if not (these don't affect the exit status).
 
 #include "thaiwordbreak.cpp"
 #include <set>
@@ -43,6 +45,11 @@ static void addBreak(int pos, void * ctx) {
     ((std::set<int> *)ctx)->insert(pos);
 }
 
+static std::set<int> _fallback_found;
+static void addFallbackBreak(int pos, void * ctx) {
+    _fallback_found.insert(pos);
+}
+
 int main(int argc, char ** argv) {
     if ( argc < 4 ) {
         fprintf(stderr, "usage: %s th_words.txt th_weak_words.txt sentences.txt [user_words.txt]\n", argv[0]);
@@ -57,7 +64,7 @@ int main(int argc, char ** argv) {
         return 2;
     }
     char line[8192];
-    int nb_good = 0, nb_bad = 0, nb_missed = 0;
+    int nb_good = 0, nb_bad = 0, nb_missed = 0, nb_fb_good = 0, nb_fb_bad = 0;
     while ( fgets(line, sizeof(line), f) ) {
         std::string l(line);
         while ( !l.empty() && (l.back() == '\n' || l.back() == '\r') )
@@ -74,13 +81,18 @@ int main(int argc, char ** argv) {
                 text.push_back(c);
             }
         }
-        ThaiWordBreak::findBreaks(text.data(), (int)text.size(), addBreak, &found);
+        _fallback_found.clear();
+        ThaiWordBreak::findBreaks(text.data(), (int)text.size(), addBreak, &found, addFallbackBreak);
         std::u32string out;
         for ( int i=0; i<(int)text.size(); i++ ) {
             out.push_back(text[i]);
             if ( found.count(i) ) {
                 out.push_back(ok.count(i) ? U'|' : U'!');
                 if ( ok.count(i) ) nb_good++; else nb_bad++;
+            }
+            else if ( _fallback_found.count(i) ) {
+                out.push_back(ok.count(i) ? U'/' : U'?');
+                if ( ok.count(i) ) nb_fb_good++; else nb_fb_bad++;
             }
             else if ( ok.count(i) && i+1 < (int)text.size()
                         && ThaiWordBreak::isThaiChar(text[i]) && ThaiWordBreak::isThaiChar(text[i+1]) ) {
@@ -91,5 +103,6 @@ int main(int argc, char ** argv) {
     }
     fclose(f);
     printf("\nbreaks: good=%d BAD=%d not found=%d\n", nb_good, nb_bad, nb_missed);
+    printf("fallback breaks: good=%d bad=%d\n", nb_fb_good, nb_fb_bad);
     return nb_bad > 0 ? 1 : 0;
 }

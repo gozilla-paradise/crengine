@@ -242,7 +242,8 @@ lUInt16 lvfontMeasureText( const lvfont_handle pfont,
 // (This one is actually not set by lvfntman)
 #define LCHAR_LOCKED_SPACING         0x0040 ///< flag: forbid any letter spacing tweak on this char
                                             //         (for cursive scripts like arabic, and special cases)
-#define LCHAR__AVAILABLE_BIT_08__    0x0080
+#define LCHAR_ALLOW_FALLBACK_WRAP_AFTER 0x0080 ///< flag: line break after this char is allowed only if a line would
+                                           ///  otherwise be left too empty (Thai word boundary we are less sure of)
 
 /// The next ones, not fitting in a lUInt8, should only be set and used by lvtextfm
 #define LCHAR_IS_OBJECT              0x0100 ///< flag: this char is object (image, float)
