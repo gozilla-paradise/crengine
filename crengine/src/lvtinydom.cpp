@@ -249,6 +249,7 @@ enum CacheFileBlockType {
 #include <lvtextfm.h>
 #include "../include/lvdocviewprops.h"
 #include "../include/renderutil.h"
+#include "../include/thaiwordbreak.h"
 #if USE_UTF8PROC == 1
 #include <utf8proc.h>
 #endif
@@ -436,6 +437,7 @@ lUInt32 calcGlobalSettingsHash(int documentId, bool already_rendered)
         hash = hash * 31 + HyphMan::getRightHyphenMin();
         hash = hash * 31 + HyphMan::getTrustSoftHyphens();
         hash = hash * 31 + UserHyphDict::getHash();
+        hash = hash * 31 + ThaiWordBreak::getHash();
     }
     /*
     printf("  %d %d %d %d %d %d %d %d %d %d %d %d\n",

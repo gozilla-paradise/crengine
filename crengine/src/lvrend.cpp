@@ -21,6 +21,7 @@
 #include "../include/lvrend.h"
 #include "../include/renderutil.h"
 #include "../include/drawutil.h"
+#include "../include/thaiwordbreak.h"
 
 // Note about box model/sizing in crengine:
 // https://quirksmode.org/css/user-interface/boxsizing.html says:
@@ -12363,6 +12364,17 @@ void getRenderedWidths(ldomNode * node, int &maxWidth, int &minWidth, int direct
         lb_init_break_context(&lbCtx, 0x200D, NULL); // ZERO WIDTH JOINER
         lbCtx.lbpLang = lang_cfg->getLBProps();
         lb_process_next_char(&lbCtx, (utf32_t)(*txt));
+        // libunibreak gives no break opportunity inside runs of Thai text:
+        // get them from ThaiWordBreak, for the whole text (words may cross
+        // the measured chunks): thai_breaks[i] means break after txt[thai_start+i].
+        LVArray<lUInt8> thai_breaks;
+        int thai_start = start;
+        if ( !nowrap && ThaiWordBreak::isEnabled() && ThaiWordBreak::hasThai(txt + start, len) ) {
+            thai_breaks = LVArray<lUInt8>(len, 0);
+            ThaiWordBreak::findBreaks(txt + start, len, [](int pos, void * ctx) {
+                ((lUInt8 *)ctx)[pos] = 1;
+            }, thai_breaks.get());
+        }
         #endif
         while (true) {
             int chunk_len = len > MAX_TEXT_CHUNK_SIZE ? MAX_TEXT_CHUNK_SIZE : len;
@@ -12395,6 +12407,9 @@ void getRenderedWidths(ldomNode * node, int &maxWidth, int &minWidth, int direct
                     next_c = lang_cfg->getLBCharSubFunc()(&lbCtx, txt+start, i+1, len-1 - (i+1));
                 }
                 int brk = lb_process_next_char(&lbCtx, (utf32_t)next_c);
+                if ( brk != LINEBREAK_ALLOWBREAK && thai_breaks.length() > 0 && thai_breaks[start + i - thai_start] ) {
+                    brk = LINEBREAK_ALLOWBREAK; // between 2 Thai words
+                }
                     // We don't really need to bother with consecutive spaces (that
                     // should collapse when not 'pre', but libunibreak only allows
                     // break on the last one, so we would get the leading spaces

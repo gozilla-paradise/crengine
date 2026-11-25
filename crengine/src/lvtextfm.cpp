@@ -27,6 +27,7 @@
 #include "../include/lvrend.h"
 #include "../include/textlang.h"
 #include "../include/renderutil.h"
+#include "../include/thaiwordbreak.h"
 #endif
 
 #if USE_HARFBUZZ==1
@@ -1764,6 +1765,20 @@ public:
             }
         }
         TR("%s", LCSTR(lString32(m_text, m_length)));
+
+        #if (USE_LIBUNIBREAK==1)
+        // libunibreak gives no break opportunity inside runs of Thai text (it
+        // resolves Thai letters, line break class SA, to AL): get them from
+        // ThaiWordBreak. We do it on the whole paragraph text, so we can find
+        // words even if they are made from multiple text nodes.
+        // (If white-space: nowrap, LCHAR_DEPRECATED_WRAP_AFTER has been set
+        // on these chars, and will be checked as for any other break.)
+        if ( ThaiWordBreak::isEnabled() && ThaiWordBreak::hasThai(m_text, m_length) ) {
+            ThaiWordBreak::findBreaks(m_text, m_length, [](int pos, void * ctx) {
+                ((lUInt16 *)ctx)[pos] |= LCHAR_ALLOW_WRAP_AFTER;
+            }, m_flags);
+        }
+        #endif
 
         // Whether any "-cr-hint: strut-confined" should be applied: only when
         // we have non-space-only text in the paragraph - standalone images
